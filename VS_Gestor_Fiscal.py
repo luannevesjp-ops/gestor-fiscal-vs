@@ -15,6 +15,15 @@ import json
 from pathlib import Path
 from datetime import date
 
+# Tkinter só existe em ambientes com display (execução local). No Streamlit Cloud não está disponível.
+try:
+    import tkinter as _tk_test
+    _tk_test.Tk().destroy()
+    _TKINTER_OK = True
+    del _tk_test
+except Exception:
+    _TKINTER_OK = False
+
 # ============================================================================
 # CONFIGURAÇÕES INICIAIS
 # ============================================================================
@@ -469,11 +478,12 @@ def pagina_certificados():
             )
         with col_p2:
             st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("📂 Selecionar", key="btn_pasta_picker", use_container_width=True):
-                p = _picker_pasta_cert()
-                if p:
-                    st.session_state["cert_pasta"] = p
-                    st.rerun()
+            if _TKINTER_OK:
+                if st.button("📂 Selecionar", key="btn_pasta_picker", use_container_width=True):
+                    p = _picker_pasta_cert()
+                    if p:
+                        st.session_state["cert_pasta"] = p
+                        st.rerun()
 
         if pasta_digitada:
             st.session_state["cert_pasta"] = pasta_digitada
@@ -597,7 +607,7 @@ def pagina_certificados():
             )
         with col_a2:
             st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("📂 Selecionar", key="btn_pick_arquivo", use_container_width=True):
+            if _TKINTER_OK and st.button("📂 Selecionar", key="btn_pick_arquivo", use_container_width=True):
                 arq = _picker_arquivo_cert()
                 if arq:
                     st.session_state["add_cert_path"] = arq
