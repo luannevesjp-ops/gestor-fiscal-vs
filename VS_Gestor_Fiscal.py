@@ -414,6 +414,21 @@ def _picker_pasta_cert():
     return pasta or ""
 
 
+def _picker_arquivo_cert():
+    import tkinter as tk
+    from tkinter import filedialog
+    root = tk.Tk()
+    root.withdraw()
+    root.wm_attributes("-topmost", True)
+    root.lift()
+    arquivo = filedialog.askopenfilename(
+        title="Selecione o certificado .pfx",
+        filetypes=[("Certificado Digital", "*.pfx"), ("Todos os arquivos", "*.*")],
+    )
+    root.destroy()
+    return arquivo or ""
+
+
 def _extrair_senha_nome(nome_arquivo: str) -> str:
     """Extrai senha do nome: 'senha' (case-insensitive) + espaços/traços opcionais + tudo até próximo espaço."""
     import re
@@ -572,25 +587,64 @@ def pagina_certificados():
 
     # ── Adicionar individual ──────────────────────────────────────────────────
     with st.expander("➕ Adicionar Certificado Individual", expanded=False):
-        col_a1, col_a2 = st.columns([3, 2])
+        col_a1, col_a2 = st.columns([5, 1])
         with col_a1:
-            add_caminho = st.text_input("Caminho do arquivo .pfx:", key="add_cert_caminho")
+            add_caminho = st.text_input(
+                "Caminho do arquivo .pfx:",
+                value=st.session_state.get("add_cert_path", ""),
+                key="add_cert_caminho",
+                placeholder="Ex.: C:\\Certificados\\empresa.pfx",
+            )
         with col_a2:
-            add_senha = st.text_input("Senha:", type="password", key="add_cert_senha")
-        if st.button("Testar e Adicionar", key="btn_add_individual"):
-            if not add_caminho or not add_senha:
-                st.error("Informe o caminho e a senha.")
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("📂 Selecionar", key="btn_pick_arquivo", use_container_width=True):
+                arq = _picker_arquivo_cert()
+                if arq:
+                    st.session_state["add_cert_path"] = arq
+                    # Auto-detecta senha pelo nome do arquivo
+                    senha_auto = _extrair_senha_nome(Path(arq).name)
+                    if senha_auto:
+                        st.session_state["add_cert_senha_auto"] = senha_auto
+                    else:
+                        st.session_state.pop("add_cert_senha_auto", None)
+                    st.rerun()
+
+        # Caminho efetivo (pode vir do picker ou digitação)
+        add_caminho = add_caminho or st.session_state.get("add_cert_path", "")
+
+        # Senha: auto-detectada (editável) ou campo em branco
+        senha_auto = st.session_state.get("add_cert_senha_auto", "")
+        col_s1, col_s2 = st.columns([3, 3])
+        with col_s1:
+            if senha_auto:
+                st.markdown(f"🔒 Senha detectada no nome: `{senha_auto}`")
+            else:
+                st.markdown("Nenhuma senha detectada no nome do arquivo.")
+        with col_s2:
+            add_senha = st.text_input(
+                "Senha:" if not senha_auto else "Substituir senha:",
+                type="password",
+                key="add_cert_senha",
+                placeholder="senha detectada será usada" if senha_auto else "Digite a senha",
+            )
+        senha_final = add_senha if add_senha else senha_auto
+
+        if st.button("✅ Testar e Adicionar", key="btn_add_individual", type="primary"):
+            if not add_caminho:
+                st.error("Selecione ou informe o caminho do arquivo .pfx.")
+            elif not senha_final:
+                st.error("Informe a senha do certificado.")
             elif not Path(add_caminho).exists():
                 st.error("Arquivo não encontrado.")
             elif add_caminho in {c["arquivo"] for c in certs}:
                 st.warning("Este certificado já está na lista.")
             else:
                 try:
-                    razao, cnpj, val_str, val_iso = _cert_ler_pfx(add_caminho, add_senha)
+                    razao, cnpj, val_str, val_iso = _cert_ler_pfx(add_caminho, senha_final)
                     certs.append({
                         "arquivo": add_caminho,
                         "nome_arquivo": Path(add_caminho).name,
-                        "senha": add_senha,
+                        "senha": senha_final,
                         "razao_social": razao or Path(add_caminho).stem,
                         "cnpj": cnpj,
                         "validade": val_str,
@@ -598,6 +652,8 @@ def pagina_certificados():
                     })
                     dados["certificados"] = certs
                     _cert_salvar_dados(dados)
+                    st.session_state.pop("add_cert_path", None)
+                    st.session_state.pop("add_cert_senha_auto", None)
                     st.success(f"Certificado adicionado: {razao or Path(add_caminho).stem}")
                     st.rerun()
                 except Exception as e:
