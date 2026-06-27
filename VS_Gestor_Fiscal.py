@@ -347,8 +347,8 @@ def _cert_situacao(validade_iso: str):
         return "DESCONHECIDO", None
 
 
-def _cert_ler_pfx(caminho: str, senha: str):
-    """Lê um PFX e retorna (razao_social, documento, validade_str, validade_iso).
+def _cert_ler_pfx(fonte, senha: str):
+    """Lê um PFX (caminho no disco ou bytes) e retorna (razao_social, documento, validade_str, validade_iso).
     documento pode ser CNPJ (14 dígitos) ou CPF (11 dígitos).
     """
     import re as _re
@@ -356,7 +356,7 @@ def _cert_ler_pfx(caminho: str, senha: str):
     from cryptography import x509
     from datetime import timezone
 
-    pfx_bytes = Path(caminho).read_bytes()
+    pfx_bytes = fonte if isinstance(fonte, (bytes, bytearray)) else Path(fonte).read_bytes()
     _, cert, _ = pkcs12.load_key_and_certificates(pfx_bytes, senha.encode("utf-8"))
 
     OID_ECNPJ = "2.16.76.1.3.3"
@@ -466,56 +466,37 @@ def pagina_certificados():
     dados = _cert_carregar_dados()
     certs = dados["certificados"]
 
-    # ── Importar da pasta ─────────────────────────────────────────────────────
-    with st.expander("📁 Importar Certificados da Pasta", expanded=not certs):
-        col_p1, col_p2 = st.columns([5, 1])
-        with col_p1:
-            pasta_digitada = st.text_input(
-                "Caminho da pasta com os certificados (.pfx):",
-                value=st.session_state.get("cert_pasta", ""),
-                key="cert_pasta_input",
-                placeholder="Ex.: C:\\Certificados",
-            )
-        with col_p2:
-            st.markdown("<br>", unsafe_allow_html=True)
-            if _TKINTER_OK:
-                if st.button("📂 Selecionar", key="btn_pasta_picker", use_container_width=True):
-                    p = _picker_pasta_cert()
-                    if p:
-                        st.session_state["cert_pasta"] = p
-                        st.rerun()
+    # ── Importar certificados (múltiplos) ────────────────────────────────────
+    with st.expander("📁 Importar Certificados", expanded=not certs):
+        st.markdown("Selecione um ou mais arquivos `.pfx` do seu computador:")
+        arquivos_up = st.file_uploader(
+            "Certificados .pfx",
+            type=["pfx"],
+            accept_multiple_files=True,
+            key="upload_pfx_multiplos",
+            label_visibility="collapsed",
+        )
 
-        if pasta_digitada:
-            st.session_state["cert_pasta"] = pasta_digitada
-            pasta_path = Path(pasta_digitada)
-            # Busca recursiva em todas as subpastas
-            pfx_encontrados = sorted(pasta_path.rglob("*.pfx")) if pasta_path.exists() else []
-            arquivos_ja = {c["arquivo"] for c in certs}
-            novos = [p for p in pfx_encontrados if str(p) not in arquivos_ja]
+        if arquivos_up:
+            nomes_ja = {c["nome_arquivo"] for c in certs}
+            novos = [f for f in arquivos_up if f.name not in nomes_ja]
 
-            if not pfx_encontrados:
-                st.warning("Nenhum arquivo .pfx encontrado nesta pasta (incluindo subpastas).")
-            elif not novos:
-                st.info(f"{len(pfx_encontrados)} certificado(s) encontrado(s) — todos já estão na lista.")
+            if not novos:
+                st.info(f"{len(arquivos_up)} arquivo(s) selecionado(s) — todos já estão na lista.")
             else:
-                # Classifica: com senha detectada no nome vs. sem senha
-                com_senha = []   # (Path, senha_detectada)
-                sem_senha = []   # Path
-                for pfx in novos:
-                    s = _extrair_senha_nome(pfx.name)
+                com_senha = []
+                sem_senha = []
+                for f in novos:
+                    s = _extrair_senha_nome(f.name)
                     if s:
-                        com_senha.append((pfx, s))
+                        com_senha.append((f, s))
                     else:
-                        sem_senha.append(pfx)
+                        sem_senha.append(f)
 
-                st.markdown(
-                    f"**{len(novos)} novo(s) certificado(s) encontrado(s) "
-                    f"(pasta e subpastas):**"
-                )
+                st.markdown(f"**{len(novos)} novo(s) certificado(s):**")
 
                 senhas_novas = {}
 
-                # Campo de senha padrão para arquivos sem senha no nome
                 senha_padrao = ""
                 if sem_senha:
                     senha_padrao = st.text_input(
@@ -525,68 +506,59 @@ def pagina_certificados():
                         placeholder="Digite a senha padrão",
                     )
 
-                # Arquivos com senha detectada no nome
                 if com_senha:
-                    st.markdown("**Com senha detectada no nome do arquivo:**")
-                    for pfx, senha_auto in com_senha:
-                        try:
-                            rel = pfx.relative_to(pasta_path)
-                        except Exception:
-                            rel = pfx.name
+                    st.markdown("**Com senha detectada no nome:**")
+                    for f, senha_auto in com_senha:
                         c1, c2, c3 = st.columns([4, 2, 2])
                         with c1:
-                            st.markdown(f"`{rel}`")
+                            st.markdown(f"`{f.name}`")
                         with c2:
-                            st.markdown(f"🔒 Detectada: `{senha_auto}`")
+                            st.markdown(f"🔒 `{senha_auto}`")
                         with c3:
                             override = st.text_input(
                                 "Substituir", type="password",
-                                key=f"sn_{abs(hash(str(pfx)))}",
+                                key=f"sn_{abs(hash(f.name))}",
                                 label_visibility="collapsed",
                                 placeholder="substituir (opcional)",
                             )
-                        senhas_novas[str(pfx)] = override if override else senha_auto
+                        senhas_novas[f.name] = (f, override if override else senha_auto)
 
-                # Arquivos sem senha no nome
                 if sem_senha:
                     st.markdown("**Sem senha no nome (usarão a senha padrão acima):**")
-                    for pfx in sem_senha:
-                        try:
-                            rel = pfx.relative_to(pasta_path)
-                        except Exception:
-                            rel = pfx.name
+                    for f in sem_senha:
                         c1, c2 = st.columns([4, 2])
                         with c1:
-                            st.markdown(f"`{rel}`")
+                            st.markdown(f"`{f.name}`")
                         with c2:
                             override = st.text_input(
                                 "Senha individual", type="password",
-                                key=f"sn_{abs(hash(str(pfx)))}",
+                                key=f"sn_{abs(hash(f.name))}",
                                 label_visibility="collapsed",
                                 placeholder="ou senha individual",
                             )
-                        senhas_novas[str(pfx)] = override if override else senha_padrao
+                        senhas_novas[f.name] = (f, override if override else senha_padrao)
 
                 if st.button("✅ Importar todos", key="btn_importar_pasta"):
                     adicionados, erros = 0, []
-                    for caminho, senha in senhas_novas.items():
+                    for nome, (f_obj, senha) in senhas_novas.items():
                         if not senha:
-                            erros.append(f"{Path(caminho).name}: senha não informada.")
+                            erros.append(f"{nome}: senha não informada.")
                             continue
                         try:
-                            razao, cnpj, val_str, val_iso = _cert_ler_pfx(caminho, senha)
+                            conteudo = f_obj.read()
+                            razao, cnpj, val_str, val_iso = _cert_ler_pfx(conteudo, senha)
                             certs.append({
-                                "arquivo": caminho,
-                                "nome_arquivo": Path(caminho).name,
+                                "arquivo": nome,
+                                "nome_arquivo": nome,
                                 "senha": senha,
-                                "razao_social": razao or Path(caminho).stem,
+                                "razao_social": razao or Path(nome).stem,
                                 "cnpj": cnpj,
                                 "validade": val_str,
                                 "validade_iso": val_iso,
                             })
                             adicionados += 1
                         except Exception as e:
-                            erros.append(f"{Path(caminho).name}: {e}")
+                            erros.append(f"{nome}: {e}")
                     dados["certificados"] = certs
                     _cert_salvar_dados(dados)
                     if adicionados:
@@ -597,74 +569,52 @@ def pagina_certificados():
 
     # ── Adicionar individual ──────────────────────────────────────────────────
     with st.expander("➕ Adicionar Certificado Individual", expanded=False):
-        col_a1, col_a2 = st.columns([5, 1])
-        with col_a1:
-            add_caminho = st.text_input(
-                "Caminho do arquivo .pfx:",
-                value=st.session_state.get("add_cert_path", ""),
-                key="add_cert_caminho",
-                placeholder="Ex.: C:\\Certificados\\empresa.pfx",
-            )
-        with col_a2:
-            st.markdown("<br>", unsafe_allow_html=True)
-            if _TKINTER_OK and st.button("📂 Selecionar", key="btn_pick_arquivo", use_container_width=True):
-                arq = _picker_arquivo_cert()
-                if arq:
-                    st.session_state["add_cert_path"] = arq
-                    # Auto-detecta senha pelo nome do arquivo
-                    senha_auto = _extrair_senha_nome(Path(arq).name)
-                    if senha_auto:
-                        st.session_state["add_cert_senha_auto"] = senha_auto
-                    else:
-                        st.session_state.pop("add_cert_senha_auto", None)
-                    st.rerun()
+        f_ind = st.file_uploader(
+            "Selecione o arquivo .pfx:",
+            type=["pfx"],
+            accept_multiple_files=False,
+            key="upload_pfx_individual",
+        )
 
-        # Caminho efetivo (pode vir do picker ou digitação)
-        add_caminho = add_caminho or st.session_state.get("add_cert_path", "")
-
-        # Senha: auto-detectada (editável) ou campo em branco
-        senha_auto = st.session_state.get("add_cert_senha_auto", "")
-        col_s1, col_s2 = st.columns([3, 3])
-        with col_s1:
+        if f_ind:
+            senha_auto = _extrair_senha_nome(f_ind.name)
             if senha_auto:
                 st.markdown(f"🔒 Senha detectada no nome: `{senha_auto}`")
             else:
                 st.markdown("Nenhuma senha detectada no nome do arquivo.")
-        with col_s2:
-            add_senha = st.text_input(
-                "Senha:" if not senha_auto else "Substituir senha:",
-                type="password",
-                key="add_cert_senha",
-                placeholder="senha detectada será usada" if senha_auto else "Digite a senha",
-            )
-        senha_final = add_senha if add_senha else senha_auto
+
+        senha_auto_ind = _extrair_senha_nome(f_ind.name) if f_ind else ""
+        add_senha = st.text_input(
+            "Substituir senha:" if senha_auto_ind else "Senha:",
+            type="password",
+            key="add_cert_senha",
+            placeholder="senha detectada será usada" if senha_auto_ind else "Digite a senha",
+        )
+        senha_final = add_senha if add_senha else senha_auto_ind
 
         if st.button("✅ Testar e Adicionar", key="btn_add_individual", type="primary"):
-            if not add_caminho:
-                st.error("Selecione ou informe o caminho do arquivo .pfx.")
+            if not f_ind:
+                st.error("Selecione o arquivo .pfx.")
             elif not senha_final:
                 st.error("Informe a senha do certificado.")
-            elif not Path(add_caminho).exists():
-                st.error("Arquivo não encontrado.")
-            elif add_caminho in {c["arquivo"] for c in certs}:
+            elif f_ind.name in {c["nome_arquivo"] for c in certs}:
                 st.warning("Este certificado já está na lista.")
             else:
                 try:
-                    razao, cnpj, val_str, val_iso = _cert_ler_pfx(add_caminho, senha_final)
+                    conteudo = f_ind.read()
+                    razao, cnpj, val_str, val_iso = _cert_ler_pfx(conteudo, senha_final)
                     certs.append({
-                        "arquivo": add_caminho,
-                        "nome_arquivo": Path(add_caminho).name,
+                        "arquivo": f_ind.name,
+                        "nome_arquivo": f_ind.name,
                         "senha": senha_final,
-                        "razao_social": razao or Path(add_caminho).stem,
+                        "razao_social": razao or Path(f_ind.name).stem,
                         "cnpj": cnpj,
                         "validade": val_str,
                         "validade_iso": val_iso,
                     })
                     dados["certificados"] = certs
                     _cert_salvar_dados(dados)
-                    st.session_state.pop("add_cert_path", None)
-                    st.session_state.pop("add_cert_senha_auto", None)
-                    st.success(f"Certificado adicionado: {razao or Path(add_caminho).stem}")
+                    st.success(f"Certificado adicionado: {razao or Path(f_ind.name).stem}")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Erro ao ler o certificado: {e}")
