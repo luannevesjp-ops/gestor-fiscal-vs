@@ -1,0 +1,15 @@
+# Arquivos Excel locais
+*.xlsx
+*.xls
+*.xlsm
+
+# Arquivos temporários
+~$*
+
+# Cache Python
+__pycache__/
+*.pyc
+
+# Ambiente virtual (se existir no futuro)
+venv/
+.env
