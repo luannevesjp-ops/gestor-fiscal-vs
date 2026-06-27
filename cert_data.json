@@ -1,0 +1,15 @@
+{
+  "certificados": [],
+  "emails": {
+    "37822808000164": [
+      "luaneves22@hotmail.com"
+    ],
+    "2011973532": [
+      "luaneves22@hotmail.com"
+    ]
+  },
+  "mensagens": {
+    "vencendo": "Prezado(a),\n\nInformamos que o certificado digital de {razao_social} (CNPJ: {cnpj}) vence em {dias} dia(s), no dia {validade}.\n\nPor favor, providencie a renovacao com urgencia.\n\nAtenciosamente,\nDepartamento Fiscal",
+    "vencido": "Prezado(a),\n\nInformamos que o certificado digital de {razao_social} (CNPJ: {cnpj}) venceu em {validade}.\n\nPor favor, providencie a renovacao imediatamente.\n\nAtenciosamente,\nDepartamento Fiscal"
+  }
+}
