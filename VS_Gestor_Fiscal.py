@@ -2431,133 +2431,182 @@ def pagina_sefaz():
 
 
 def pagina_cnd_municipal():
+    import plotly.graph_objects as go
     st.empty()
+
     df = le_planilha_google(GOOGLE_SHEET_URL, SHEET_EMPRESAS)
     if df is None:
         return
-    
-    competencia_raw = df.get("PERÍODO DE COMPETÊNCIA", [""])[0]
-    competencia = pd.to_datetime(competencia_raw, errors='coerce').strftime("%m/%Y") if competencia_raw else ""
-    
-    df_cnd = df[df["Situação"].astype(str).str.upper() == "ATIVA"] if "Situação" in df.columns else pd.DataFrame()
+
+    competencia_raw = df["PERÍODO DE COMPETÊNCIA"].iloc[0] \
+        if "PERÍODO DE COMPETÊNCIA" in df.columns else ""
+    competencia = pd.to_datetime(competencia_raw, errors="coerce").strftime("%m/%Y") \
+        if competencia_raw else ""
+
+    df_cnd = df[df["Situação"].astype(str).str.upper() == "ATIVA"].copy() \
+        if "Situação" in df.columns else pd.DataFrame()
     if df_cnd.empty:
         st.warning("Nenhuma empresa ATIVA encontrada.")
         return
-    
-    colunas_solicitadas = ["Código", "Razão Social", "CNPJ", "Município", "Estado", 
+
+    colunas_solicitadas = ["Código", "Razão Social", "CNPJ", "Município", "Estado",
                            "SITUAÇÃO CND MUNICIPAL", "VALIDADE", "LINK CND MUNICIPAL", "Situação"]
-    colunas_existentes = [c for c in colunas_solicitadas if c in df_cnd.columns]
-    df_cnd = df_cnd[colunas_existentes].copy()
-    
+    df_cnd = df_cnd[[c for c in colunas_solicitadas if c in df_cnd.columns]].copy()
+
     if "VALIDADE" in df_cnd.columns:
-        df_cnd["VALIDADE"] = pd.to_datetime(df_cnd["VALIDADE"], errors='coerce').dt.strftime("%d/%m/%Y").fillna("")
-    
-    def check_pdf_link(link):
-        return "Disponível" if pd.notna(link) and str(link).strip() != "" else "Indisponível"
-    
-    if "LINK CND MUNICIPAL" in df_cnd.columns:
-        df_cnd["PDF"] = df_cnd["LINK CND MUNICIPAL"].apply(check_pdf_link)
-    else:
-        df_cnd["PDF"] = "Indisponível"
-    
+        df_cnd["VALIDADE"] = pd.to_datetime(df_cnd["VALIDADE"], errors="coerce").dt.strftime("%d/%m/%Y").fillna("")
+
+    if "CNPJ" in df_cnd.columns:
+        df_cnd["CNPJ"] = df_cnd["CNPJ"].apply(_normaliza_cnpj)
+
+    # ── Contagens ─────────────────────────────────────────────────────────────
     if "SITUAÇÃO CND MUNICIPAL" in df_cnd.columns:
-        situacao_upper = df_cnd["SITUAÇÃO CND MUNICIPAL"].astype(str).str.upper().str.strip()
-        positivas = (situacao_upper == "POSITIVA").sum()
-        negativas = (situacao_upper == "NEGATIVA").sum()
-        positiva_efeito_negativa = (situacao_upper == "POSITIVA COM EFEITO NEGATIVA").sum()
-    if "SITUAÇÃO CND MUNICIPAL" in df_cnd.columns:
-        situacao_upper = df_cnd["SITUAÇÃO CND MUNICIPAL"].astype(str).str.upper().str.strip()
-        positivas = (situacao_upper == "POSITIVA").sum()
-        negativas = (situacao_upper == "NEGATIVA").sum()
-        positiva_efeito_negativa = (situacao_upper == "POSITIVA COM EFEITO NEGATIVA").sum()
-        nao_geradas = ((situacao_upper == "") | (situacao_upper == "NAN") | df_cnd["SITUAÇÃO CND MUNICIPAL"].isna()).sum()
+        sit_u = df_cnd["SITUAÇÃO CND MUNICIPAL"].fillna("").astype(str).str.strip().str.upper()
+        positivas           = (sit_u == "POSITIVA").sum()
+        negativas           = (sit_u == "NEGATIVA").sum()
+        positiva_efeito_neg = (sit_u == "POSITIVA COM EFEITO NEGATIVA").sum()
+        nao_geradas         = sit_u.isin(["", "NAN"]).sum()
     else:
-        positivas = negativas = positiva_efeito_negativa = nao_geradas = 0
-    
+        positivas = negativas = positiva_efeito_neg = nao_geradas = 0
+
     total_geral = df_cnd.shape[0]
-    
+
+    # ── Cabeçalho ─────────────────────────────────────────────────────────────
+    st.markdown("<h2>CND MUNICIPAL</h2>", unsafe_allow_html=True)
+    st.markdown(
+        f"<p style='text-align:right; font-size:20px;'>"
+        f"<b>Total:</b> {total_geral} &nbsp;|&nbsp; <b>Competência:</b> {competencia}</p>",
+        unsafe_allow_html=True,
+    )
+
+    # ── Donut ─────────────────────────────────────────────────────────────────
+    total_dash = int(positivas + negativas + positiva_efeito_neg + nao_geradas)
+    if total_dash > 0:
+        fig = go.Figure(data=[go.Pie(
+            labels=["Positivas", "Negativas", "Positiva c/ Efeito Neg.", "Não Geradas"],
+            values=[int(positivas), int(negativas), int(positiva_efeito_neg), int(nao_geradas)],
+            hole=0.68,
+            marker=dict(colors=["#e74c3c", "#27ae60", "#f39c12", "#bdc3c7"],
+                        line=dict(color="#ffffff", width=3)),
+            textinfo="none",
+            hovertemplate="<b>%{label}</b><br>%{value} empresa(s) — %{percent}<extra></extra>",
+            direction="clockwise", sort=False,
+        )])
+        fig.update_layout(
+            paper_bgcolor="white", plot_bgcolor="white", showlegend=False,
+            margin=dict(t=20, b=20, l=20, r=20), height=300,
+            annotations=[dict(
+                text=f"<b>{total_geral}</b><br><span style='font-size:11px'>empresas</span>",
+                x=0.5, y=0.5, xanchor="center", yanchor="middle",
+                showarrow=False, font=dict(size=22, color="#1d3f77"),
+            )],
+        )
+        st.plotly_chart(fig, use_container_width=True, key="chart_cnd_municipal_donut")
+
+    # ── Cards ─────────────────────────────────────────────────────────────────
+    c1, c2, c3, c4 = st.columns(4)
+
+    _cols_modal = ["Código", "Razão Social", "CNPJ", "Município", "SITUAÇÃO CND MUNICIPAL", "VALIDADE"]
+
+    with c1:
+        st.markdown(
+            f"<div style='text-align:center; padding:8px; background:#fdf2f2; border-radius:8px; border-left:4px solid #e74c3c;'>"
+            f"<span style='font-size:22px; font-weight:700; color:#e74c3c;'>{positivas}</span><br>"
+            f"<span style='font-size:13px; color:#555;'>Positivas</span></div>",
+            unsafe_allow_html=True,
+        )
+        if st.button("Ver Positivas", key="btn_cnd_pos", use_container_width=True):
+            df_pos = df_cnd[df_cnd["SITUAÇÃO CND MUNICIPAL"].fillna("").astype(str).str.strip().str.upper() == "POSITIVA"]
+            _modal_dashboard("Positivas", df_pos, _cols_modal)
+
+    with c2:
+        st.markdown(
+            f"<div style='text-align:center; padding:8px; background:#eafaf1; border-radius:8px; border-left:4px solid #27ae60;'>"
+            f"<span style='font-size:22px; font-weight:700; color:#27ae60;'>{negativas}</span><br>"
+            f"<span style='font-size:13px; color:#555;'>Negativas</span></div>",
+            unsafe_allow_html=True,
+        )
+
+    with c3:
+        st.markdown(
+            f"<div style='text-align:center; padding:8px; background:#fef9e7; border-radius:8px; border-left:4px solid #f39c12;'>"
+            f"<span style='font-size:22px; font-weight:700; color:#f39c12;'>{positiva_efeito_neg}</span><br>"
+            f"<span style='font-size:13px; color:#555;'>Positiva c/ Efeito Neg.</span></div>",
+            unsafe_allow_html=True,
+        )
+
+    with c4:
+        st.markdown(
+            f"<div style='text-align:center; padding:8px; background:#f8f9fa; border-radius:8px; border-left:4px solid #bdc3c7;'>"
+            f"<span style='font-size:22px; font-weight:700; color:#7f8c8d;'>{nao_geradas}</span><br>"
+            f"<span style='font-size:13px; color:#555;'>Não Geradas</span></div>",
+            unsafe_allow_html=True,
+        )
+        if st.button("Ver Não Geradas", key="btn_cnd_ng", use_container_width=True):
+            sit_u2 = df_cnd["SITUAÇÃO CND MUNICIPAL"].fillna("").astype(str).str.strip().str.upper()
+            df_ng = df_cnd[sit_u2.isin(["", "NAN"])]
+            _modal_dashboard("Não Geradas", df_ng, ["Código", "Razão Social", "CNPJ", "Município"])
+
+    st.divider()
+
+    # ── Visualizador de PDF / grade ───────────────────────────────────────────
     if "visualizando_pdf" not in st.session_state:
         st.session_state.visualizando_pdf = False
         st.session_state.pdf_selecionado = None
-    
+
     if st.session_state.visualizando_pdf and st.session_state.pdf_selecionado:
         col1, col2 = st.columns([6, 1])
-        
         with col1:
             if st.button("← Voltar para a lista", type="primary"):
                 st.session_state.visualizando_pdf = False
                 st.session_state.pdf_selecionado = None
                 st.rerun()
-        
         with col2:
             row = st.session_state.pdf_selecionado
             link_pdf = row.get("LINK CND MUNICIPAL", "")
-            
-            if link_pdf and "drive.google.com" in str(link_pdf):
-                if "/file/d/" in link_pdf:
-                    file_id = link_pdf.split("/file/d/")[1].split("/")[0]
-                    download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
-                    
-                    st.markdown(
-                        f'<a href="{download_url}" target="_blank">'
-                        f'<button style="background-color:#1d3f77; color:white; padding:8px 16px; '
-                        f'border:none; border-radius:4px; cursor:pointer; font-size:14px;">'
-                        f'📥 Baixar PDF</button></a>',
-                        unsafe_allow_html=True
-                    )
-        
+            if link_pdf and "drive.google.com" in str(link_pdf) and "/file/d/" in str(link_pdf):
+                file_id = link_pdf.split("/file/d/")[1].split("/")[0]
+                st.markdown(
+                    f'<a href="https://drive.google.com/uc?export=download&id={file_id}" target="_blank">'
+                    f'<button style="background-color:#1d3f77;color:white;padding:8px 16px;'
+                    f'border:none;border-radius:4px;cursor:pointer;font-size:14px;">📥 Baixar PDF</button></a>',
+                    unsafe_allow_html=True,
+                )
         st.divider()
         row = st.session_state.pdf_selecionado
-        cnpj = row.get("CNPJ", "")
-        razao = row.get("Razão Social", "")
         link_pdf = row.get("LINK CND MUNICIPAL", "")
-        status_pdf = row.get("PDF", "Indisponível")
-        
-        st.subheader(f"📄 {razao}")
-        st.caption(f"CNPJ: {cnpj}")
-        
-        if status_pdf == "Disponível" and link_pdf:
+        st.subheader(f"📄 {row.get('Razão Social', '')}")
+        st.caption(f"CNPJ: {row.get('CNPJ', '')}")
+        if link_pdf and str(link_pdf).strip():
             try:
-                if "drive.google.com" in str(link_pdf):
-                    if "/file/d/" in link_pdf:
-                        file_id = link_pdf.split("/file/d/")[1].split("/")[0]
-                        embed_url = f"https://drive.google.com/file/d/{file_id}/preview"
-                        st.markdown(f'<iframe src="{embed_url}" width="100%" height="800" frameborder="0"></iframe>',
-                                    unsafe_allow_html=True)
-                    else:
-                        st.error("❌ Formato de link do Google Drive não reconhecido")
-                        st.info(f"Link: {link_pdf}")
+                if "drive.google.com" in str(link_pdf) and "/file/d/" in str(link_pdf):
+                    file_id = link_pdf.split("/file/d/")[1].split("/")[0]
+                    embed_url = f"https://drive.google.com/file/d/{file_id}/preview"
+                    st.markdown(f'<iframe src="{embed_url}" width="100%" height="800" frameborder="0"></iframe>',
+                                unsafe_allow_html=True)
                 else:
                     st.markdown(f'<iframe src="{link_pdf}" width="100%" height="800" frameborder="0"></iframe>',
                                 unsafe_allow_html=True)
             except Exception as e:
                 st.error(f"❌ Erro ao carregar PDF: {e}")
-                st.info(f"Link: {link_pdf}")
         else:
             st.error("❌ PDF não disponível")
             st.info("Link do PDF não foi encontrado na planilha (coluna LINK CND MUNICIPAL)")
     else:
-        st.markdown(f"<h2>CND Municipal</h2><p style='text-align:right; font-size:20px;'>"
-                    f"<b>Positivas:</b> {positivas} | <b>Negativas:</b> {negativas} | "
-                    f"<b>Positiva c/ efeito negativa:</b> {positiva_efeito_negativa} | "
-                    f"<b>Não geradas:</b> {nao_geradas} | <b>Total:</b> {total_geral} | "
-                    f"<b>Competência:</b> {competencia}</p>", unsafe_allow_html=True)
-        
         st.info("💡 Selecione uma linha na tabela para visualizar o PDF correspondente.")
-        
-        with st.container():
-            df_cnd = _sanitiza_df(df_cnd)
-            grid_response = exibe_aggrid_com_oculta(df_cnd, height=400, grid_key="grid_cnd_municipal",
-                                                     selection_mode='single',
-                                                     colunas_ocultas=["Situação", "LINK CND MUNICIPAL"])
-        
-        selected_rows = grid_response.get('selected_rows', [])
+        df_grid = _sanitiza_df(df_cnd)
+        grid_response = exibe_aggrid_com_oculta(
+            df_grid, height=400, grid_key="grid_cnd_municipal",
+            selection_mode="single",
+            colunas_ocultas=["Situação", "LINK CND MUNICIPAL"],
+        )
+        selected_rows = grid_response.get("selected_rows", [])
         if selected_rows is not None and len(selected_rows) > 0:
             row = selected_rows.iloc[0].to_dict() if isinstance(selected_rows, pd.DataFrame) else selected_rows[0]
             st.session_state.pdf_selecionado = row
             st.session_state.visualizando_pdf = True
             st.rerun()
-        
+
         output = BytesIO()
         df_cnd.to_excel(output, index=False)
         st.download_button("📥 Baixar Excel", data=output.getvalue(), file_name="cnd_municipal.xlsx",
