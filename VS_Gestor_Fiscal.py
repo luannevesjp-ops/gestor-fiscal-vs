@@ -2526,6 +2526,9 @@ def pagina_cnd_municipal():
             f"<span style='font-size:13px; color:#555;'>Negativas</span></div>",
             unsafe_allow_html=True,
         )
+        if st.button("Ver Negativas", key="btn_cnd_neg", use_container_width=True):
+            df_neg = df_cnd[df_cnd["SITUAÇÃO CND MUNICIPAL"].fillna("").astype(str).str.strip().str.upper() == "NEGATIVA"]
+            _modal_dashboard("Negativas", df_neg, _cols_modal)
 
     with c3:
         st.markdown(
@@ -2534,6 +2537,9 @@ def pagina_cnd_municipal():
             f"<span style='font-size:13px; color:#555;'>Positiva c/ Efeito Neg.</span></div>",
             unsafe_allow_html=True,
         )
+        if st.button("Ver Positiva c/ Efeito Neg.", key="btn_cnd_pen", use_container_width=True):
+            df_pen = df_cnd[df_cnd["SITUAÇÃO CND MUNICIPAL"].fillna("").astype(str).str.strip().str.upper() == "POSITIVA COM EFEITO NEGATIVA"]
+            _modal_dashboard("Positiva c/ Efeito Negativa", df_pen, _cols_modal)
 
     with c4:
         st.markdown(
@@ -2597,15 +2603,9 @@ def pagina_cnd_municipal():
         df_grid = _sanitiza_df(df_cnd)
         grid_response = exibe_aggrid_com_oculta(
             df_grid, height=400, grid_key="grid_cnd_municipal",
-            selection_mode="single",
+            selection_mode="none",
             colunas_ocultas=["Situação", "LINK CND MUNICIPAL"],
         )
-        selected_rows = grid_response.get("selected_rows", [])
-        if selected_rows is not None and len(selected_rows) > 0:
-            row = selected_rows.iloc[0].to_dict() if isinstance(selected_rows, pd.DataFrame) else selected_rows[0]
-            st.session_state.pdf_selecionado = row
-            st.session_state.visualizando_pdf = True
-            st.rerun()
 
         output = BytesIO()
         df_cnd.to_excel(output, index=False)
