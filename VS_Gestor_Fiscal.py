@@ -5,7 +5,7 @@
 
 import streamlit as st
 import pandas as pd
-from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, ColumnsAutoSizeMode
 from io import BytesIO
 import requests
 import time
@@ -127,17 +127,18 @@ def le_planilha_google(url: str, aba: str):
 
 def exibe_aggrid(df, height=400, grid_key="grid", selection_mode='none'):
     gb = GridOptionsBuilder.from_dataframe(df)
-    gb.configure_default_column(filter=True, sortable=True, editable=False, resizable=True)
-    
+    gb.configure_default_column(filter=True, sortable=True, editable=False, resizable=True,
+                                 minWidth=110, wrapHeaderText=True, autoHeaderHeight=True)
+
     if selection_mode != 'none':
         gb.configure_selection(selection_mode=selection_mode, use_checkbox=True)
-    
+
     for col in df.columns:
         if pd.api.types.is_numeric_dtype(df[col]):
             gb.configure_column(col, filter="agNumberColumnFilter")
         else:
             gb.configure_column(col, filter="agTextColumnFilter")
-    
+
     gb.configure_grid_options(
         domLayout="normal", floatingFilter=True, headerHeight=40, rowHeight=30,
         enableBrowserTooltips=True, enableCellTextSelection=True, suppressMenuHide=True,
@@ -147,25 +148,27 @@ def exibe_aggrid(df, height=400, grid_key="grid", selection_mode='none'):
             'notBlank': 'Não em branco', 'noRowsToShow': 'Nenhum registro para mostrar',
         }
     )
-    
+
     grid_options = gb.build()
     update_on = ['selectionChanged'] if selection_mode != 'none' else []
-    
+
     return AgGrid(df, gridOptions=grid_options, height=height, key=grid_key,
-                  fit_columns_on_grid_load=True, enable_enterprise_modules=False,
+                  columns_auto_size_mode=ColumnsAutoSizeMode.FIT_CONTENTS,
+                  enable_enterprise_modules=False,
                   update_on=update_on, allow_unsafe_jscode=True, reload_data=False)
 
 
 def exibe_aggrid_com_oculta(df, height=400, grid_key="grid", selection_mode='none', colunas_ocultas=None):
     if colunas_ocultas is None:
         colunas_ocultas = []
-    
+
     gb = GridOptionsBuilder.from_dataframe(df)
-    gb.configure_default_column(filter=True, sortable=True, editable=False, resizable=True)
-    
+    gb.configure_default_column(filter=True, sortable=True, editable=False, resizable=True,
+                                 minWidth=110, wrapHeaderText=True, autoHeaderHeight=True)
+
     if selection_mode != 'none':
         gb.configure_selection(selection_mode=selection_mode, use_checkbox=True)
-    
+
     for col in df.columns:
         if col in colunas_ocultas:
             gb.configure_column(col, hide=True)
@@ -173,18 +176,19 @@ def exibe_aggrid_com_oculta(df, height=400, grid_key="grid", selection_mode='non
             gb.configure_column(col, filter="agNumberColumnFilter")
         else:
             gb.configure_column(col, filter="agTextColumnFilter")
-    
+
     gb.configure_grid_options(
         domLayout="normal", floatingFilter=True, headerHeight=40, rowHeight=30,
         enableBrowserTooltips=True, enableCellTextSelection=True, suppressMenuHide=True,
         localeText={'filterOoo': 'Filtrar...', 'noRowsToShow': 'Nenhum registro'}
     )
-    
+
     grid_options = gb.build()
     update_on = ['selectionChanged'] if selection_mode != 'none' else []
-    
+
     return AgGrid(df, gridOptions=grid_options, height=height, key=grid_key,
-                  fit_columns_on_grid_load=True, enable_enterprise_modules=False,
+                  columns_auto_size_mode=ColumnsAutoSizeMode.FIT_CONTENTS,
+                  enable_enterprise_modules=False,
                   update_on=update_on, allow_unsafe_jscode=True, reload_data=False)
 
 # ============================================================================
@@ -2677,6 +2681,19 @@ def _modal_sefaz_sem_movimento(df_show):
                  use_container_width=True, hide_index=True)
 
 
+@st.dialog("SEFAZ — Divergentes")
+def _modal_sefaz_divergentes(df_show):
+    st.markdown(f"**{df_show.shape[0]} empresa(s) com quantidade divergente**")
+    cols = [c for c in ["Código", "Razão Social", "CNPJ", "Estado", "Insc. Estadual",
+                        "ENTRADAS SEFAZ", "SAÍDAS SEFAZ", "TOTAL SEFAZ", "TOTAL DOMÍNIO", "MOTIVO"]
+            if c in df_show.columns]
+    df_exib = df_show[cols].copy()
+    if "CNPJ" in df_exib.columns:
+        df_exib["CNPJ"] = df_exib["CNPJ"].apply(_normaliza_cnpj)
+    st.dataframe(df_exib.reset_index(drop=True),
+                 use_container_width=True, hide_index=True)
+
+
 @st.fragment
 def pagina_sefaz():
     import plotly.graph_objects as go
@@ -2703,8 +2720,8 @@ def pagina_sefaz():
 
     # ── colunas para exibição ─────────────────────────────────────────────────
     colunas = ["Código", "Razão Social", "CNPJ", "Estado", "Insc. Estadual",
-               "XML ENTRADA", "XML SAÍDA", "IMPORTAÇÃO",
-               "TOTAL ENTRADA", "TOTAL SAÍDA", "TOTAL DOMÍNIO", "Situação"]
+               "IMPORTAÇÃO", "TOTAL ENTRADA", "TOTAL SAÍDA", "EMISSÃO TERCEIRO",
+               "PERCA", "TOTAL DOMÍNIO", "MOTIVO DIFERENÇA SEFAZ", "Situação"]
     df_sefaz = df_sefaz[[c for c in colunas if c in df_sefaz.columns]].copy()
 
     # ── CNPJ: 14 dígitos ─────────────────────────────────────────────────────
@@ -2712,35 +2729,45 @@ def pagina_sefaz():
         df_sefaz["CNPJ"] = df_sefaz["CNPJ"].apply(_normaliza_cnpj)
 
     # ── colunas numéricas ─────────────────────────────────────────────────────
-    for col in ["TOTAL ENTRADA", "TOTAL SAÍDA", "TOTAL DOMÍNIO"]:
+    for col in ["TOTAL ENTRADA", "TOTAL SAÍDA", "TOTAL DOMÍNIO", "EMISSÃO TERCEIRO", "PERCA"]:
         if col in df_sefaz.columns:
             df_sefaz[col] = pd.to_numeric(df_sefaz[col], errors="coerce").fillna(0)
 
-    # ── coluna Confronto ──────────────────────────────────────────────────────  ← NOVO
-    if all(c in df_sefaz.columns for c in ["XML ENTRADA", "XML SAÍDA", "TOTAL DOMÍNIO"]):
-        xml_entrada = pd.to_numeric(df_sefaz["XML ENTRADA"],   errors="coerce").fillna(0)
-        xml_saida   = pd.to_numeric(df_sefaz["XML SAÍDA"],     errors="coerce").fillna(0)
-        total_dom   = pd.to_numeric(df_sefaz["TOTAL DOMÍNIO"], errors="coerce").fillna(0)
-        soma_xml    = xml_entrada + xml_saida
+    # ── TOTAL SEFAZ = ENTRADAS + SAÍDAS - EMISSÃO TERCEIRO - PERCA ────────────
+    # (no escritório VISÃO a regra é diferente: ENTRADAS + SAÍDAS - PERCA, sem
+    # subtrair EMISSÃO TERCEIRO — ver LEIA-ME.md, "Diferenças conhecidas")
+    for c in ["TOTAL ENTRADA", "TOTAL SAÍDA", "EMISSÃO TERCEIRO", "PERCA"]:
+        if c not in df_sefaz.columns:
+            df_sefaz[c] = 0
+    df_sefaz["TOTAL SEFAZ"] = (
+        df_sefaz["TOTAL ENTRADA"] + df_sefaz["TOTAL SAÍDA"]
+        - df_sefaz["EMISSÃO TERCEIRO"] - df_sefaz["PERCA"]
+    )
 
-        def _confronto(idx):
-            s = soma_xml[idx]
-            d = total_dom[idx]
-            if s == 0 and d == 0:
-                return "Importação OK"
-            if s == d:
-                return "Importação OK"
-            return "Quantidade Diferente"
-
-        df_sefaz["Confronto"] = [_confronto(i) for i in df_sefaz.index]
+    # ── coluna Confronto: TOTAL SEFAZ (ajustado) x TOTAL DOMÍNIO ──────────────
+    if "TOTAL DOMÍNIO" in df_sefaz.columns:
+        total_dom    = df_sefaz["TOTAL DOMÍNIO"]
+        total_sefaz  = df_sefaz["TOTAL SEFAZ"]
+        df_sefaz["Confronto"] = [
+            "Importação OK" if total_sefaz[i] == total_dom[i] else "Quantidade Diferente"
+            for i in df_sefaz.index
+        ]
     else:
         df_sefaz["Confronto"] = "Importação OK"
 
-    cols = [c for c in df_sefaz.columns if c not in ("Confronto", "Situação")]
-    cols_final = cols + ["Confronto"]
-    if "Situação" in df_sefaz.columns:
-        cols_final = cols + ["Confronto", "Situação"]
-    df_sefaz = df_sefaz[cols_final]
+    # ── renomeia colunas para exibição ────────────────────────────────────────
+    df_sefaz = df_sefaz.rename(columns={
+        "TOTAL ENTRADA": "ENTRADAS SEFAZ",
+        "TOTAL SAÍDA": "SAÍDAS SEFAZ",
+        "MOTIVO DIFERENÇA SEFAZ": "MOTIVO",
+    })
+
+    # ── ordem final das colunas ───────────────────────────────────────────────
+    ordem = ["Código", "Razão Social", "CNPJ", "Estado", "Insc. Estadual",
+             "IMPORTAÇÃO", "ENTRADAS SEFAZ", "SAÍDAS SEFAZ", "EMISSÃO TERCEIRO",
+             "TOTAL SEFAZ", "PERCA", "TOTAL DOMÍNIO", "Confronto", "MOTIVO",
+             "Situação"]
+    df_sefaz = df_sefaz[[c for c in ordem if c in df_sefaz.columns]]
 
     # ── classificação IMPORTAÇÃO (coluna BS) ──────────────────────────────────  ← CONTINUA IGUAL
     def _classifica_sefaz(val):
@@ -2765,6 +2792,8 @@ def pagina_sefaz():
     sem_busca      = (df_sefaz["IMPORTAÇÃO"] == "Sem Busca").sum()
     sem_movimento  = (df_sefaz["IMPORTAÇÃO"] == "Sem Movimento").sum()
     total          = com_movimento + sem_acesso + sem_busca + sem_movimento
+    divergentes    = int((df_sefaz["Confronto"] == "Quantidade Diferente").sum()) \
+        if "Confronto" in df_sefaz.columns else 0
 
     st.markdown("<h2>SEFAZ</h2>", unsafe_allow_html=True)
     st.markdown(
@@ -2773,6 +2802,7 @@ def pagina_sefaz():
         f"<b>Sem Acesso:</b> {sem_acesso} &nbsp;|&nbsp; "
         f"<b>Sem Busca:</b> {sem_busca} &nbsp;|&nbsp; "
         f"<b>Sem Movimento:</b> {sem_movimento} &nbsp;|&nbsp; "
+        f"<b>Divergentes:</b> {divergentes} &nbsp;|&nbsp; "
         f"<b>Competência:</b> {competencia}</p>",
         unsafe_allow_html=True,
     )
@@ -2857,9 +2887,22 @@ def pagina_sefaz():
             unsafe_allow_html=True,
         )
 
+    # ── card Confronto (divergentes SEFAZ x Domínio) ──────────────────────────
+    pct_dv = round(divergentes / total * 100) if total else 0
+    st.markdown("<br>", unsafe_allow_html=True)
+    col_dv_esq, col_dv_centro, col_dv_dir = st.columns([1, 2, 1])
+    with col_dv_centro:
+        st.markdown(
+            f"<div style='text-align:center; padding:8px; background:#fdedec; "
+            f"border-radius:8px; border-left:4px solid #c0392b;'>"
+            f"<span style='font-size:20px; font-weight:700; color:#c0392b;'>{divergentes}</span><br>"
+            f"<span style='font-size:12px; color:#555;'>Confronto Divergente ({pct_dv}%)</span></div>",
+            unsafe_allow_html=True,
+        )
+
     # ── botões das listas ─────────────────────────────────────────────────────
     st.markdown("<br>", unsafe_allow_html=True)
-    b1, b2, b3 = st.columns(3)
+    b1, b2, b3, b4 = st.columns(4)
     with b1:
         if st.button("Ver sem acesso", use_container_width=True,
                      key="btn_sefaz_sem_acesso"):
@@ -2872,6 +2915,10 @@ def pagina_sefaz():
         if st.button("Ver sem movimento", use_container_width=True,
                      key="btn_sefaz_sem_movimento"):
             _modal_sefaz_sem_movimento(df_sefaz[df_sefaz["IMPORTAÇÃO"] == "Sem Movimento"])
+    with b4:
+        if st.button("Ver divergentes", use_container_width=True,
+                     key="btn_sefaz_divergentes"):
+            _modal_sefaz_divergentes(df_sefaz[df_sefaz["Confronto"] == "Quantidade Diferente"])
 
     st.divider()
 
@@ -3725,11 +3772,20 @@ def pagina_leitura_xml_rest():
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 def _sanitiza_df(df):
-    """Converte todas as colunas para string — evita erro Arrow."""
+    """Converte todas as colunas para string — evita erro Arrow.
+    Números inteiros (mesmo vindos como float, ex.: 3.0) não mostram
+    o '.0' no final; valores realmente decimais (ex.: 3.5) são mantidos."""
     df = df.copy()
     for col in df.columns:
-        df[col] = df[col].astype(str).replace("nan", "").replace("None", "")
-    return df                
+        if pd.api.types.is_numeric_dtype(df[col]):
+            def _fmt_num(v):
+                if pd.isna(v):
+                    return ""
+                return str(int(v)) if float(v).is_integer() else str(v)
+            df[col] = df[col].apply(_fmt_num)
+        else:
+            df[col] = df[col].astype(str).replace("nan", "").replace("None", "")
+    return df
 
 @st.dialog("Prefeitura — DMS Sem Acesso")
 def _modal_sem_acesso_dms(df_show):
