@@ -5,7 +5,7 @@
 
 import streamlit as st
 import pandas as pd
-from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, ColumnsAutoSizeMode
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, ColumnsAutoSizeMode, DataReturnMode
 from io import BytesIO
 import requests
 import time
@@ -125,7 +125,10 @@ def le_planilha_google(url: str, aba: str):
         return None
 
 
-def exibe_aggrid(df, height=400, grid_key="grid", selection_mode='none'):
+def exibe_aggrid(df, height=400, grid_key="grid", selection_mode='none', retorna_filtrado=False):
+    # retorna_filtrado=True: a grade avisa o Python a cada filtro/ordenação feito
+    # nas colunas, e o .data do retorno passa a trazer só as linhas visíveis
+    # (usado pra exportar pro Excel exatamente o que está filtrado na tela).
     gb = GridOptionsBuilder.from_dataframe(df)
     gb.configure_default_column(filter=True, sortable=True, editable=False, resizable=True,
                                  minWidth=110, wrapHeaderText=True, autoHeaderHeight=True)
@@ -151,10 +154,14 @@ def exibe_aggrid(df, height=400, grid_key="grid", selection_mode='none'):
 
     grid_options = gb.build()
     update_on = ['selectionChanged'] if selection_mode != 'none' else []
+    if retorna_filtrado:
+        update_on += ['filterChanged', 'sortChanged']
 
     return AgGrid(df, gridOptions=grid_options, height=height, key=grid_key,
                   columns_auto_size_mode=ColumnsAutoSizeMode.FIT_CONTENTS,
                   enable_enterprise_modules=False,
+                  data_return_mode=(DataReturnMode.FILTERED_AND_SORTED if retorna_filtrado
+                                    else DataReturnMode.AS_INPUT),
                   update_on=update_on, allow_unsafe_jscode=True, reload_data=False)
 
 
@@ -466,6 +473,63 @@ def _enviar_outlook_cert(para: list, assunto: str, corpo: str):
         return False, str(e)
 
 
+def _cert_excel_tabela(df):
+    """Gera o .xlsx da lista de certificados formatado como Tabela do Excel
+    (estilo azul TableStyleMedium2), com Validade como data de verdade e Dias
+    como número, pra ordenar/filtrar certo dentro do Excel."""
+    from datetime import datetime as _dt
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment
+    from openpyxl.utils import get_column_letter
+    from openpyxl.worksheet.table import Table, TableStyleInfo
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "CERTIFICADOS"
+    colunas = list(df.columns)
+    ws.append(colunas)
+
+    for reg in df.itertuples(index=False):
+        linha = []
+        for col, val in zip(colunas, reg):
+            if col == "Validade":
+                try:
+                    val = _dt.strptime(str(val).strip(), "%d/%m/%Y")
+                except ValueError:
+                    pass
+            elif col == "Dias":
+                try:
+                    val = int(float(val))
+                except (TypeError, ValueError):
+                    pass
+            linha.append(val)
+        ws.append(linha)
+
+    n_linhas = ws.max_row
+    for i, col in enumerate(colunas, start=1):
+        letra = get_column_letter(i)
+        largura = max([len(str(col))] + [len(str(c.value or "")) for c in ws[letra][1:]])
+        ws.column_dimensions[letra].width = min(largura + 4, 60)
+        if col == "Validade":
+            for c in ws[letra][1:]:
+                c.number_format = "DD/MM/YYYY"
+        if col in ("Validade", "Dias", "Situação", "CPF/CNPJ"):
+            for c in ws[letra][1:]:
+                c.alignment = Alignment(horizontal="center")
+
+    # Tabela exige ao menos 1 linha de dados além do cabeçalho
+    if n_linhas >= 2:
+        tabela = Table(displayName="Certificados",
+                       ref=f"A1:{get_column_letter(len(colunas))}{n_linhas}")
+        tabela.tableStyleInfo = TableStyleInfo(name="TableStyleMedium2", showRowStripes=True)
+        ws.add_table(tabela)
+    ws.freeze_panes = "A2"
+
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 # ── página CERTIFICADOS ────────────────────────────────────────────────────────
 def pagina_certificados():
     st.markdown("<h2>CERTIFICADOS DIGITAIS</h2>", unsafe_allow_html=True)
@@ -644,7 +708,36 @@ def pagina_certificados():
         st.info("Nenhum certificado neste filtro.")
     else:
         df_cert = pd.DataFrame([{k: v for k, v in r.items() if not k.startswith("_")} for r in rows_filtradas])
-        exibe_aggrid(df_cert, height=350, grid_key=f"grid_certs_{filtro_cert}")
+        cols_cert = list(df_cert.columns)  # antes do AgGrid (versões novas injetam colunas internas "::...")
+        grid_cert = exibe_aggrid(df_cert, height=350, grid_key=f"grid_certs_{filtro_cert}",
+                                 retorna_filtrado=True)
+
+        # ── Baixar Excel: respeita o filtro acima (Vencidos/Vencendo/Normais)
+        # e também os filtros/ordenação digitados nas colunas da grade. Sem
+        # filtro nenhum ("Todos" e colunas limpas) sai a lista inteira.
+        df_export = df_cert[cols_cert]
+        try:
+            df_grid = grid_cert.data
+            if isinstance(df_grid, pd.DataFrame):
+                if df_grid.empty:  # filtro das colunas não deixou nenhuma linha
+                    df_export = df_export.iloc[0:0]
+                elif set(cols_cert).issubset(df_grid.columns):
+                    df_export = df_grid[cols_cert]
+        except Exception:
+            pass
+
+        filtrado = filtro_cert != "Todos" or len(df_export) != len(df_cert)
+        sufixo = filtro_cert.lower().replace(" ", "_") if filtro_cert != "Todos" else "todos"
+        if len(df_export) != len(df_cert):
+            sufixo += "_filtrado"
+        st.download_button(
+            f"📥 Baixar Excel ({len(df_export)} certificado(s){' — filtrado' if filtrado else ''})",
+            data=_cert_excel_tabela(df_export),
+            file_name=f"certificados_{sufixo}_{date.today():%d-%m-%Y}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="btn_excel_certs",
+            disabled=df_export.empty,
+        )
 
     # ── Remover certificado ───────────────────────────────────────────────────
     st.divider()
