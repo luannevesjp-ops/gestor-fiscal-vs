@@ -381,6 +381,53 @@ def _cert_enviar_drive(nome, conteudo, senha, cnpj, razao, validade_iso):
         return False, str(e)
 
 
+def _cert_enviar_drive_lote(itens):
+    """Envia vários .pfx numa chamada só (bem mais rápido que um por vez).
+    itens = [(nome, conteudo, senha, cnpj, razao, validade_iso), ...]
+    Retorna (qtd_guardados, [erros], desligado). Se o Apps Script publicado
+    ainda for a versão sem "upload_lote", cai no envio um por um."""
+    if not CERT_DRIVE_URL:
+        return 0, [], True
+    try:
+        resp = requests.post(CERT_DRIVE_URL, json={
+            "acao": "upload_lote",
+            "escritorio": CERT_DRIVE_ESCRITORIO,
+            "itens": [{
+                "nome_arquivo": nome,
+                "conteudo_b64": base64.b64encode(conteudo).decode("ascii"),
+                "senha": senha,
+                "cnpj": cnpj,
+                "razao_social": razao,
+                "validade_iso": validade_iso,
+            } for nome, conteudo, senha, cnpj, razao, validade_iso in itens],
+        }, timeout=180)
+        resp.raise_for_status()
+        ret = resp.json()
+    except Exception as e:
+        return 0, [f"{nome}: {e}" for nome, *_ in itens], False
+
+    if ret.get("status") == "ok":
+        ok, erros = 0, []
+        for (nome, *_), r in zip(itens, ret.get("itens", [])):
+            if r.get("status") == "ok":
+                ok += 1
+            else:
+                erros.append(f"{nome}: {r.get('mensagem', 'erro no Apps Script')}")
+        return ok, erros, False
+
+    if str(ret.get("mensagem", "")).startswith("Ação desconhecida"):   # script antigo
+        ok, erros = 0, []
+        for item in itens:
+            sucesso, msg = _cert_enviar_drive(*item)
+            if sucesso:
+                ok += 1
+            else:
+                erros.append(f"{item[0]}: {msg}")
+        return ok, erros, False
+    return 0, [f"{nome}: {ret.get('mensagem', 'resposta inesperada do Apps Script')}"
+               for nome, *_ in itens], False
+
+
 def _cert_situacao(validade_iso: str):
     """Retorna (situação, dias) a partir de 'YYYY-MM-DD'."""
     try:
@@ -733,6 +780,7 @@ def pagina_certificados():
                 if st.button("✅ Importar", key="btn_importar_pasta", type="primary"):
                     adicionados, erros = 0, []
                     drive_ok, drive_erros, drive_desligado = 0, [], False
+                    para_drive = []
                     for nome, (f_obj, senha) in senhas_novas.items():
                         if not senha:
                             erros.append(f"{nome}: senha não informada.")
@@ -753,18 +801,17 @@ def pagina_certificados():
                         except Exception as e:
                             erros.append(f"{nome}: {e}")
                             continue
-                        # Cópia do arquivo .pfx na pasta CERTIFICADOS do Drive (não
-                        # impede a importação se falhar)
-                        ok_drive, msg_drive = _cert_enviar_drive(
-                            nome, conteudo, senha, cnpj, razao, val_iso)
-                        if ok_drive:
-                            drive_ok += 1
-                        elif ok_drive is False:
-                            drive_erros.append(f"{nome}: {msg_drive}")
-                        else:
-                            drive_desligado = True
-                    dados["certificados"] = certs
-                    _cert_salvar_dados(dados)
+                        para_drive.append((nome, conteudo, senha, cnpj, razao, val_iso))
+                    # Cópia dos .pfx na pasta CERTIFICADOS do Drive — todos numa
+                    # chamada só, em paralelo com a gravação na planilha (não
+                    # impede a importação se falhar)
+                    from concurrent.futures import ThreadPoolExecutor
+                    with ThreadPoolExecutor(max_workers=1) as _pool:
+                        fut_drive = _pool.submit(_cert_enviar_drive_lote, para_drive) if para_drive else None
+                        dados["certificados"] = certs
+                        _cert_salvar_dados(dados)
+                        if fut_drive is not None:
+                            drive_ok, drive_erros, drive_desligado = fut_drive.result()
                     msgs = []
                     if adicionados:
                         msgs.append(("ok", f"✅ {adicionados} certificado(s) importado(s)!"))
