@@ -700,6 +700,14 @@ def pagina_certificados():
     st.markdown("<h2>CERTIFICADOS DIGITAIS</h2>", unsafe_allow_html=True)
 
     dados = _cert_carregar_dados()
+    # Mesmo arquivo 2x na lista (ex.: Importar clicado duas vezes) → fica 1.
+    # A planilha é limpa na próxima gravação (importar/remover).
+    _vistos, _unicos = set(), []
+    for _c in dados["certificados"]:
+        if _c.get("arquivo") not in _vistos:
+            _vistos.add(_c.get("arquivo"))
+            _unicos.append(_c)
+    dados["certificados"] = _unicos
     certs = dados["certificados"]
 
     # Resultado do último Importar (guardado antes do rerun, senão a mensagem some)
@@ -949,9 +957,9 @@ def pagina_certificados():
                     c["arquivo"]: st.checkbox(
                         f"{c.get('razao_social', '')} — "
                         f"{_formata_cnpj_mascara(c.get('cnpj',''))}  ·  {c['nome_arquivo']}",
-                        key=f"chk_{abs(hash(c['arquivo']))}",
+                        key=f"chk_{i}_{abs(hash(c['arquivo']))}",   # índice: chave nunca repete
                     )
-                    for c in certs
+                    for i, c in enumerate(certs)
                 }
                 submitted = st.form_submit_button("🗑️ Excluir Selecionados", type="primary")
                 if submitted:
