@@ -513,7 +513,7 @@ def _cert_excel_tabela(df):
         if col == "Validade":
             for c in ws[letra][1:]:
                 c.number_format = "DD/MM/YYYY"
-        if col in ("Validade", "Dias", "Situação", "CPF/CNPJ"):
+        if col in ("Código", "Validade", "Dias", "Situação", "CPF/CNPJ", "Certificado"):
             for c in ws[letra][1:]:
                 c.alignment = Alignment(horizontal="center")
 
@@ -528,6 +528,90 @@ def _cert_excel_tabela(df):
     buf = BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+def _cert_linhas_com_empresas(certs):
+    """Cruza os certificados com as empresas ATIVAS da aba GERAL (menu EMPRESAS).
+    Uma linha por empresa ativa (com o certificado dela, o da matriz — mesma
+    raiz de CNPJ — ou SEM CERTIFICADO) + uma linha por certificado cujo CPF/CNPJ
+    não está entre as empresas ativas ("Fora da base")."""
+    def _doc(v):
+        # CNPJ do certificado pode vir da planilha como número (perde o zero à esquerda)
+        s = str(v).strip()
+        if s.endswith(".0"):
+            s = s[:-2]
+        d = re.sub(r"\D", "", s)
+        if not d:
+            return ""
+        return d.zfill(11) if len(d) <= 11 else _normaliza_cnpj(d)   # CPF x CNPJ
+
+    def _linha_cert(c):
+        sit, dias = _cert_situacao(c.get("validade_iso", ""))
+        return c.get("validade", ""), (dias if dias is not None else "?"), sit
+
+    # Por documento, fica o certificado de validade mais longa (renovado > antigo)
+    cert_por_doc = {}
+    for c in certs:
+        d = _doc(c.get("cnpj", ""))
+        if not d:
+            continue
+        atual = cert_por_doc.get(d)
+        if atual is None or str(c.get("validade_iso", "")) > str(atual.get("validade_iso", "")):
+            cert_por_doc[d] = c
+    cert_por_raiz = {}
+    for d, c in cert_por_doc.items():
+        if len(d) == 14:
+            atual = cert_por_raiz.get(d[:8])
+            if atual is None or str(c.get("validade_iso", "")) > str(atual.get("validade_iso", "")):
+                cert_por_raiz[d[:8]] = c
+
+    rows, docs_empresas = [], set()
+    df = le_planilha_google(GOOGLE_SHEET_URL, SHEET_EMPRESAS)
+    if df is not None and "Situação" in df.columns and "CNPJ" in df.columns:
+        df_at = _sanitiza_df(df[df["Situação"].astype(str).str.upper() == "ATIVA"])
+        for _, emp in df_at.iterrows():
+            d = _doc(emp.get("CNPJ", ""))
+            if not d:
+                continue
+            docs_empresas.add(d)
+            c, origem = cert_por_doc.get(d), "Próprio"
+            if c is None and len(d) == 14:
+                c, origem = cert_por_raiz.get(d[:8]), "Da matriz"
+            if c is not None:
+                validade, dias, sit = _linha_cert(c)
+            else:
+                validade, dias, sit, origem = "", "", "SEM CERTIFICADO", "—"
+            rows.append({
+                "Código": str(emp.get("Código", "") or ""),
+                "Razão Social": str(emp.get("Razão Social", "") or ""),
+                "CPF/CNPJ": _formata_cnpj_mascara(d) if len(d) == 14 else d,
+                "Validade": validade,
+                "Dias": dias,
+                "Situação": sit,
+                "Certificado": origem,
+                "_sit": sit,
+                "_empresa": True,
+            })
+    else:
+        st.warning("Não foi possível ler as empresas da aba GERAL — mostrando só os certificados.")
+
+    for c in certs:
+        d = _doc(c.get("cnpj", ""))
+        if d and d in docs_empresas:
+            continue
+        validade, dias, sit = _linha_cert(c)
+        rows.append({
+            "Código": "",
+            "Razão Social": c.get("razao_social", ""),
+            "CPF/CNPJ": _formata_cnpj_mascara(d) if len(d) == 14 else d,
+            "Validade": validade,
+            "Dias": dias,
+            "Situação": sit,
+            "Certificado": "Fora da base" if docs_empresas else "Próprio",
+            "_sit": sit,
+            "_empresa": False,
+        })
+    return rows
 
 
 # ── página CERTIFICADOS ────────────────────────────────────────────────────────
@@ -639,36 +723,28 @@ def pagina_certificados():
 
     st.divider()
 
-    if not certs:
+    rows = _cert_linhas_com_empresas(certs)
+
+    if not rows:
         st.info("Nenhum certificado cadastrado. Use as opções acima para importar.")
         return
 
     # ── Contadores ────────────────────────────────────────────────────────────
-    rows = []
-    for c in certs:
-        sit, dias = _cert_situacao(c.get("validade_iso", ""))
-        cnpj_fmt = _formata_cnpj_mascara(c["cnpj"]) if c.get("cnpj") else ""
-        rows.append({
-            "Razão Social": c.get("razao_social", ""),
-            "CPF/CNPJ": cnpj_fmt,
-            "Validade": c.get("validade", ""),
-            "Dias": dias if dias is not None else "?",
-            "Situação": sit,
-            "_arquivo": c["arquivo"],
-            "_sit": sit,
-        })
-
     n_vencidos = sum(1 for r in rows if r["_sit"] == "VENCIDO")
     n_vencendo = sum(1 for r in rows if r["_sit"] == "VENCENDO")
     n_normais  = sum(1 for r in rows if r["_sit"] == "NORMAL")
-    total_certs = len(rows)
+    n_sem_cert = sum(1 for r in rows if r["_sit"] == "SEM CERTIFICADO")
+    n_empresas = sum(1 for r in rows if r["_empresa"])
+    n_matriz   = sum(1 for r in rows if r["Certificado"] == "Da matriz")
+    n_fora     = sum(1 for r in rows if r["Certificado"] == "Fora da base")
 
     st.markdown(
-        f"<p style='text-align:right; font-size:18px;'><b>Total:</b> {total_certs}</p>",
+        f"<p style='text-align:right; font-size:18px;'><b>Empresas ativas:</b> {n_empresas}"
+        f" | <b>Certificados:</b> {len(certs)}</p>",
         unsafe_allow_html=True,
     )
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
         st.markdown(
             f"<div style='text-align:center; padding:8px; background:#fdedec; border-radius:8px; border-left:4px solid #c0392b;'>"
@@ -690,22 +766,38 @@ def pagina_certificados():
             f"<span style='font-size:13px; color:#555;'>Normais</span></div>",
             unsafe_allow_html=True,
         )
+    with c4:
+        st.markdown(
+            f"<div style='text-align:center; padding:8px; background:#eef0f3; border-radius:8px; border-left:4px solid #5d6d7e;'>"
+            f"<span style='font-size:22px; font-weight:700; color:#5d6d7e;'>{n_sem_cert}</span><br>"
+            f"<span style='font-size:13px; color:#555;'>Empresas sem certificado</span></div>",
+            unsafe_allow_html=True,
+        )
+
+    obs = []
+    if n_matriz:
+        obs.append(f"{n_matriz} filial(is) usando o certificado da matriz (mesma raiz de CNPJ)")
+    if n_fora:
+        obs.append(f"{n_fora} certificado(s) de CPF/CNPJ que não está entre as empresas ativas")
+    if obs:
+        st.caption(" · ".join(obs) + " — veja a coluna *Certificado* da lista.")
 
     st.markdown("<br>", unsafe_allow_html=True)
 
     # ── Filtro ────────────────────────────────────────────────────────────────
     filtro_cert = st.radio(
         "Filtrar por:",
-        ["Todos", "Vencidos", "Vencendo em 30 dias", "Normais"],
+        ["Todos", "Vencidos", "Vencendo em 30 dias", "Normais", "Sem certificado"],
         horizontal=True, key="filtro_cert",
     )
 
-    mapa_sit = {"Todos": None, "Vencidos": "VENCIDO", "Vencendo em 30 dias": "VENCENDO", "Normais": "NORMAL"}
+    mapa_sit = {"Todos": None, "Vencidos": "VENCIDO", "Vencendo em 30 dias": "VENCENDO",
+                "Normais": "NORMAL", "Sem certificado": "SEM CERTIFICADO"}
     alvo_sit = mapa_sit[filtro_cert]
     rows_filtradas = [r for r in rows if alvo_sit is None or r["_sit"] == alvo_sit]
 
     if not rows_filtradas:
-        st.info("Nenhum certificado neste filtro.")
+        st.info("Nenhum registro neste filtro.")
     else:
         df_cert = pd.DataFrame([{k: v for k, v in r.items() if not k.startswith("_")} for r in rows_filtradas])
         cols_cert = list(df_cert.columns)  # antes do AgGrid (versões novas injetam colunas internas "::...")
@@ -731,7 +823,7 @@ def pagina_certificados():
         if len(df_export) != len(df_cert):
             sufixo += "_filtrado"
         st.download_button(
-            f"📥 Baixar Excel ({len(df_export)} certificado(s){' — filtrado' if filtrado else ''})",
+            f"📥 Baixar Excel ({len(df_export)} linha(s){' — filtrado' if filtrado else ''})",
             data=_cert_excel_tabela(df_export),
             file_name=f"certificados_{sufixo}_{date.today():%d-%m-%Y}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
