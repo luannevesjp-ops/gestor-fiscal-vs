@@ -347,6 +347,40 @@ def _cert_salvar_dados(data):
         st.warning(f"Aviso: não foi possível salvar na planilha — {e}")
 
 
+# Cópia dos arquivos .pfx na pasta CERTIFICADOS do Drive — Apps Script único
+# para os 6 escritórios (apps_script_certificados_drive.gs), MESMA URL em todos;
+# só muda CERT_DRIVE_ESCRITORIO. O envio não pede token: quem tiver a URL só
+# consegue colocar arquivo na pasta (ver/baixar exige o TOKEN_ADMIN do script).
+# URL vazia = envio desligado.
+CERT_DRIVE_URL = "https://script.google.com/macros/s/AKfycbw6cARz9B3vqKRIyaY9hSYVRLMXqV3on5dQT8kH18UESR1qtdF-OvlIsosksKgyDZ71kw/exec"
+CERT_DRIVE_ESCRITORIO = "VS"
+
+
+def _cert_enviar_drive(nome, conteudo, senha, cnpj, razao, validade_iso):
+    """Retorna (True, "") se guardou, (False, erro) se falhou,
+    (None, "") se o envio está desligado (CERT_DRIVE_URL vazio)."""
+    if not CERT_DRIVE_URL:
+        return None, ""
+    try:
+        resp = requests.post(CERT_DRIVE_URL, json={
+            "acao": "upload",
+            "escritorio": CERT_DRIVE_ESCRITORIO,
+            "nome_arquivo": nome,
+            "conteudo_b64": base64.b64encode(conteudo).decode("ascii"),
+            "senha": senha,
+            "cnpj": cnpj,
+            "razao_social": razao,
+            "validade_iso": validade_iso,
+        }, timeout=60)
+        resp.raise_for_status()
+        ret = resp.json()
+        if ret.get("status") == "ok":
+            return True, ""
+        return False, ret.get("mensagem", "resposta inesperada do Apps Script")
+    except Exception as e:
+        return False, str(e)
+
+
 def _cert_situacao(validade_iso: str):
     """Retorna (situação, dias) a partir de 'YYYY-MM-DD'."""
     try:
@@ -621,6 +655,10 @@ def pagina_certificados():
     dados = _cert_carregar_dados()
     certs = dados["certificados"]
 
+    # Resultado do último Importar (guardado antes do rerun, senão a mensagem some)
+    for tipo, msg in st.session_state.pop("cert_import_msgs", []):
+        (st.success if tipo == "ok" else st.error)(msg)
+
     # ── Importar certificados (um ou vários) ─────────────────────────────────
     with st.expander("➕ Adicionar Certificados", expanded=True):
 
@@ -694,6 +732,7 @@ def pagina_certificados():
                 st.markdown("<hr style='margin:6px 0'>", unsafe_allow_html=True)
                 if st.button("✅ Importar", key="btn_importar_pasta", type="primary"):
                     adicionados, erros = 0, []
+                    drive_ok, drive_erros, drive_desligado = 0, [], False
                     for nome, (f_obj, senha) in senhas_novas.items():
                         if not senha:
                             erros.append(f"{nome}: senha não informada.")
@@ -713,12 +752,32 @@ def pagina_certificados():
                             adicionados += 1
                         except Exception as e:
                             erros.append(f"{nome}: {e}")
+                            continue
+                        # Cópia do arquivo .pfx na pasta CERTIFICADOS do Drive (não
+                        # impede a importação se falhar)
+                        ok_drive, msg_drive = _cert_enviar_drive(
+                            nome, conteudo, senha, cnpj, razao, val_iso)
+                        if ok_drive:
+                            drive_ok += 1
+                        elif ok_drive is False:
+                            drive_erros.append(f"{nome}: {msg_drive}")
+                        else:
+                            drive_desligado = True
                     dados["certificados"] = certs
                     _cert_salvar_dados(dados)
+                    msgs = []
                     if adicionados:
-                        st.success(f"{adicionados} certificado(s) importado(s)!")
+                        msgs.append(("ok", f"✅ {adicionados} certificado(s) importado(s)!"))
+                    if drive_desligado:
+                        msgs.append(("erro", "⚠️ Cópia no Drive desligada (CERT_DRIVE_URL vazio)."))
+                    if drive_ok:
+                        msgs.append(("ok", f"☁️ {drive_ok} arquivo(s) guardado(s) no Drive."))
+                    for err in drive_erros:
+                        msgs.append(("erro", f"⚠️ Importado, mas não foi para o Drive — {err}"))
                     for err in erros:
-                        st.error(err)
+                        msgs.append(("erro", f"❌ Não importado — {err} "
+                                             "Confira a senha e selecione o arquivo de novo."))
+                    st.session_state["cert_import_msgs"] = msgs
                     st.rerun()
 
     st.divider()
