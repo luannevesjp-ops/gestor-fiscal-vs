@@ -4696,6 +4696,24 @@ def _modal_alvara_validos(df_show):
     st.dataframe(df_show.reset_index(drop=True), use_container_width=True, hide_index=True)
 
 
+@st.dialog("Alvarás — Empresas sem alvará", width="large")
+def _modal_alvara_sem(titulo, df_show):
+    """Empresas da lista que não têm o alvará (NÃO / ISENTO / EM PROCESSO /
+    em branco — tudo que não é SIM nem INDETERMINADO)."""
+    st.markdown(f"**{titulo}** — {df_show.shape[0]} empresa(s) sem alvará")
+    if "Marcado no cadastro" in df_show.columns and not df_show.empty:
+        resumo = df_show["Marcado no cadastro"].value_counts()
+        st.caption(" · ".join(f"{k}: {v}" for k, v in resumo.items()))
+    st.dataframe(df_show.reset_index(drop=True), use_container_width=True, hide_index=True)
+    if not df_show.empty:
+        out = BytesIO()
+        df_show.to_excel(out, index=False)
+        st.download_button("📥 Baixar Excel", data=out.getvalue(),
+                           file_name="empresas_sem_alvara.xlsx",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                           key="dl_alv_sem")
+
+
 # ── Painel de Situação (modelo da planilha de alvarás do VIDAL) ─────────────
 # Cada alvará cai em UM dos status abaixo, igual à planilha modelo do
 # escritório, com duas diferenças: "Vencido" (tem alvará, data passou) e "Sem
@@ -5005,7 +5023,7 @@ def pagina_alvaras():
     df_work["_st_bomb"] = _classifica_coluna("Cert. Bombeiros",         "Vencimento Bombeiros")
 
     # ── Função de donut reutilizável ──────────────────────────────────────────
-    def _donut(status_col, titulo, chart_key, col_venc, grp):
+    def _donut(status_col, titulo, chart_key, col_venc, grp, col_sit):
         serie = df_work[status_col]
         com_alvara = serie[serie != "Sem Alvará"]
         validos  = (com_alvara == "Válido").sum()
@@ -5058,11 +5076,26 @@ def pagina_alvaras():
                             [c for c in cols_modal if c in df_work.columns]
                         ].reset_index(drop=True))
 
+        # Empresas da lista SEM este alvará (tudo que não é SIM/INDETERMINADO)
+        df_sem = df_work[serie == "Sem Alvará"]
+        with st.container(key=f"alvcard_sa_{grp}"):
+            if st.button(f"**{df_sem.shape[0]}**\n\nSem alvará — ver empresas",
+                         key=f"btn_alv_sa_{grp}", use_container_width=True,
+                         help="Empresas da lista sem este alvará (NÃO, ISENTO, EM PROCESSO ou em branco)"):
+                df_lista = df_sem[[c for c in ["Código", "Nome", "CNPJ", "Município", col_sit]
+                                   if c in df_sem.columns]].copy()
+                if col_sit in df_lista.columns:
+                    df_lista[col_sit] = (df_lista[col_sit].fillna("").astype(str).str.strip()
+                                         .str.upper().replace({"": "Em branco", "NAN": "Em branco"}))
+                    df_lista = df_lista.rename(columns={col_sit: "Marcado no cadastro"})
+                _modal_alvara_sem(titulo, df_lista)
+
     # ── Estilo dos quadradinhos + linha separando os 3 alvarás ────────────────
     _css_cards = ""
     for tipo, cor, fundo in [("ok", "#27ae60", "#eafaf1"),
                              ("ve", "#f39c12", "#fef9e7"),
-                             ("vd", "#e74c3c", "#fdf2f2")]:
+                             ("vd", "#e74c3c", "#fdf2f2"),
+                             ("sa", "#7f8c8d", "#f2f4f7")]:
         _css_cards += (
             f"div[class*='st-key-alvcard_{tipo}_'] button {{"
             f"  background:{fundo} !important; border:1px solid {fundo} !important;"
@@ -5090,19 +5123,19 @@ def pagina_alvaras():
     with col_d1:
         with st.container(key="alvgrp_loc"):
             _donut("_st_loc", "Alvará de Localização e Funcionamento", "chart_alv_loc",
-                   "Vencimento Localização", "loc")
+                   "Vencimento Localização", "loc", "Alvará de Localização")
 
     with col_d2:
         with st.container(key="alvgrp_san"):
             _donut("_st_san", "Alvará Sanitário", "chart_alv_san",
-                   "Vencimento Sanitário", "san")
+                   "Vencimento Sanitário", "san", "Alvará Sanitário")
 
     with col_d3:
         with st.container(key="alvgrp_bomb"):
             _donut("_st_bomb", "Certificado do Corpo de Bombeiros", "chart_alv_bomb",
-                   "Vencimento Bombeiros", "bomb")
+                   "Vencimento Bombeiros", "bomb", "Cert. Bombeiros")
 
-    st.caption("Clique no número de cada quadradinho para ver a lista de empresas.")
+    st.caption("Clique no número de cada quadradinho (ou em \"Sem alvará\") para ver a lista de empresas.")
     st.divider()
 
     # ── Total de empresas com cada alvará ─────────────────────────────────────
@@ -5110,6 +5143,13 @@ def pagina_alvaras():
     total_san  = (df_work["Alvará Sanitário"].astype(str).str.upper() == "SIM").sum()
     total_bomb = (df_work["Cert. Bombeiros"].astype(str).str.upper() == "SIM").sum()
     total_amb  = (df_work["Meio Ambiente"].astype(str).str.upper() == "SIM").sum()
+
+    def _n_sem(col):
+        """Empresas sem o alvará: tudo que não é SIM nem INDETERMINADO."""
+        if col not in df_work.columns:
+            return df_work.shape[0]
+        v = df_work[col].fillna("").astype(str).str.strip().str.upper()
+        return int((~v.isin(["SIM", "INDETERMINADO"])).sum())
 
     st.markdown(
         f"<div style='background:#f4f6fa; border-radius:10px; padding:12px 16px; margin-bottom:12px;'>"
@@ -5121,6 +5161,15 @@ def pagina_alvaras():
         f"<span style='color:#1d3f77; font-weight:600;'>Bombeiros:</span> <b>{total_bomb}</b>"
         f" &nbsp;|&nbsp; "
         f"<span style='color:#1d3f77; font-weight:600;'>Meio Ambiente:</span> <b>{total_amb}</b>"
+        f"<br><b style='color:#7f8c8d;'>Empresas sem o alvará:</b> &nbsp;&nbsp;"
+        f"<span style='color:#7f8c8d; font-weight:600;'>Localização:</span> <b>{_n_sem('Alvará de Localização')}</b>"
+        f" &nbsp;|&nbsp; "
+        f"<span style='color:#7f8c8d; font-weight:600;'>Sanitário:</span> <b>{_n_sem('Alvará Sanitário')}</b>"
+        f" &nbsp;|&nbsp; "
+        f"<span style='color:#7f8c8d; font-weight:600;'>Bombeiros:</span> <b>{_n_sem('Cert. Bombeiros')}</b>"
+        f" &nbsp;|&nbsp; "
+        f"<span style='color:#7f8c8d; font-weight:600;'>Meio Ambiente:</span> <b>{_n_sem('Meio Ambiente')}</b>"
+        f" &nbsp;<span style='color:#95a5a6; font-size:12px;'>(de {df_work.shape[0]} empresas da lista)</span>"
         f"</div>",
         unsafe_allow_html=True,
     )
