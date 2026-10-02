@@ -3073,8 +3073,7 @@ def pagina_sefaz():
     def _classifica_sefaz(val):
         v = str(val).strip().upper() \
             if pd.notna(val) and str(val).strip() not in ("", "NAN") else ""
-        if "SEM ACESSO" in v:
-            return "Sem Acesso"
+        # "SEM ACESSO" na IMPORTAÇÃO não conta mais: vem da SEFAZ INICIAL (abaixo)
         if "SEM BUSCA" in v:
             return "Sem Busca"
         if "SEM MOVIMENTO" in v:
@@ -3085,6 +3084,14 @@ def pagina_sefaz():
         df_sefaz["IMPORTAÇÃO"] = df_sefaz["IMPORTAÇÃO"].apply(_classifica_sefaz)
     else:
         df_sefaz["IMPORTAÇÃO"] = "Com Movimento"
+
+    # ── Sem Acesso: aba SEFAZ INICIAL, coluna J = "SEM ACESSO" (igual ao menu SEM ACESSO)
+    cods_sefaz_sa = _sefaz_inicial_sem_acesso(GOOGLE_SHEET_URL)
+    if cods_sefaz_sa is None:
+        st.warning("Não foi possível ler a aba SEFAZ INICIAL — Sem Acesso ficou zerado.")
+    elif "Código" in df_sefaz.columns:
+        mask_sa = df_sefaz["Código"].apply(_limpa_cod_sefaz).isin(cods_sefaz_sa)
+        df_sefaz.loc[mask_sa, "IMPORTAÇÃO"] = "Sem Acesso"
 
     # ── contagens ─────────────────────────────────────────────────────────────
     com_movimento  = (df_sefaz["IMPORTAÇÃO"] == "Com Movimento").sum()
@@ -4143,6 +4150,31 @@ def _sanitiza_df(df):
             df[col] = df[col].astype(str).replace("nan", "").replace("None", "")
     return df
 
+def _limpa_cod_sefaz(val):
+    s = str(val).strip()
+    if s.endswith(".0"):
+        s = s[:-2]
+    return "" if s.upper() in ("", "NAN", "NONE") else s.upper()
+
+
+@st.cache_data(ttl=600)
+def _sefaz_inicial_sem_acesso(url: str):
+    # Códigos (coluna A) da aba SEFAZ INICIAL com "SEM ACESSO" na coluna J
+    # (SITUAÇÃO). Alimenta o SEFAZ do menu SEM ACESSO. None = aba não lida.
+    try:
+        resp = requests.get(url)
+        resp.raise_for_status()
+        df = pd.read_excel(BytesIO(resp.content), sheet_name=SHEET_SEFAZ_INICIAL,
+                           engine="openpyxl")
+    except Exception:
+        return None
+    if df.shape[1] < 10:
+        return set()
+    sit = df.iloc[:, 9].astype(str).str.strip().str.upper()
+    cods = df.loc[sit.str.contains("SEM ACESSO", na=False)].iloc[:, 0].apply(_limpa_cod_sefaz)
+    return {c for c in cods if c}
+
+
 @st.dialog("Prefeitura — DMS Sem Acesso")
 def _modal_sem_acesso_dms(df_show):
     st.markdown(f"**{df_show.shape[0]} empresa(s)**")
@@ -4192,9 +4224,14 @@ def pagina_sem_acesso():
         df_dms_sa = pd.DataFrame(columns=COLS_BASE)
 
     # ── SEFAZ ─────────────────────────────────────────────────────────────────
-    col_sefaz = "IMPORTAÇÃO"
-    if col_sefaz in df_ativas.columns:
-        mask_sefaz = df_ativas[col_sefaz].astype(str).str.upper().str.contains("SEM ACESSO", na=False)
+    # Vem da aba SEFAZ INICIAL: coluna J (SITUAÇÃO) = "SEM ACESSO", casando o
+    # código da coluna A com o Código das empresas ATIVAS da GERAL.
+    cods_sefaz_sa = _sefaz_inicial_sem_acesso(GOOGLE_SHEET_URL)
+    if cods_sefaz_sa is None:
+        st.warning("Não foi possível ler a aba SEFAZ INICIAL — SEFAZ sem acesso ficou zerado.")
+        cods_sefaz_sa = set()
+    if "Código" in df_ativas.columns:
+        mask_sefaz = df_ativas["Código"].apply(_limpa_cod_sefaz).isin(cods_sefaz_sa)
         df_sefaz_sa = _prepara(df_ativas[mask_sefaz])
     else:
         df_sefaz_sa = pd.DataFrame(columns=COLS_BASE)
